@@ -169,9 +169,15 @@ module OmniAuth
         assert_raises(OmniAuth::OpenIDConnect::ConfigurationError) { strategy.request_phase }
       end
 
-      def test_token_endpoint_timeout_is_a_clean_failure
-        stub_request(:post, @fake.token_url).to_timeout
+      def test_token_endpoint_read_timeout_is_a_clean_failure
+        stub_request(:post, @fake.token_url).to_raise(Net::ReadTimeout)
         assert_clean_failure browser.sign_in('entra'), :timeout
+      end
+
+      # faraday-net_http reports a connect timeout (Net::OpenTimeout) as Faraday::ConnectionFailed.
+      def test_token_endpoint_connect_timeout_is_a_clean_failure
+        stub_request(:post, @fake.token_url).to_timeout
+        assert_clean_failure browser.sign_in('entra'), :failed_to_connect
       end
 
       def test_token_endpoint_error_description_stays_out_of_failure_and_log

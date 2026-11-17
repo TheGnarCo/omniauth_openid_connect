@@ -13,7 +13,7 @@ module OmniAuth
       end
 
       def test_request_phase
-        expected_redirect = %r{^https://example\.com/authorize\?client_id=1234&nonce=\w{32}&response_type=code&scope=openid&state=\w{32}$}
+        expected_redirect = %r{^https://example\.com/authorize\?client_id=1234&code_challenge=[\w-]{43}&code_challenge_method=S256&nonce=\w{32}&response_type=code&scope=openid&state=\w{32}$}
         strategy.options.issuer = 'example.com'
         strategy.options.client_options.host = 'example.com'
         strategy.expects(:redirect).with(regexp_matches(expected_redirect))
@@ -40,7 +40,9 @@ module OmniAuth
         request.stubs(:path_info).returns('/auth/openid_connect/logout')
         request.stubs(:path).returns('/auth/openid_connect/logout')
 
-        strategy.expects(:redirect).with(regexp_matches(expected_redirect))
+        assert_match expected_redirect, strategy.logout_redirect_url
+        strategy.expects(:redirect).never
+        strategy.expects(:call_app!)
         strategy.other_phase
       end
 
@@ -65,17 +67,8 @@ module OmniAuth
         request.stubs(:path_info).returns('/auth/openid_connect/logout')
         request.stubs(:path).returns('/auth/openid_connect/logout')
 
-        strategy.expects(:redirect).with(expected_redirect)
-        strategy.other_phase
-      end
-
-      def test_logout_phase_with_logout_path
-        strategy.options.issuer = 'example.com'
-        strategy.options.client_options.host = 'example.com'
-        strategy.options.logout_path = '/sign_out'
-
-        request.stubs(:path).returns('/auth/openid_connect/sign_out')
-
+        assert_equal expected_redirect, strategy.logout_redirect_url
+        strategy.expects(:redirect).never
         strategy.expects(:call_app!)
         strategy.other_phase
       end
@@ -91,7 +84,7 @@ module OmniAuth
       end
 
       def test_request_phase_with_params
-        expected_redirect = %r{^https://example\.com/authorize\?claims_locales=es&client_id=1234&login_hint=john.doe%40example.com&nonce=\w{32}&response_type=code&scope=openid&state=\w{32}&ui_locales=en$}
+        expected_redirect = %r{^https://example\.com/authorize\?claims_locales=es&client_id=1234&code_challenge=[\w-]{43}&code_challenge_method=S256&login_hint=john.doe%40example.com&nonce=\w{32}&response_type=code&scope=openid&state=\w{32}&ui_locales=en$}
         strategy.options.issuer = 'example.com'
         strategy.options.client_options.host = 'example.com'
         request.stubs(:params).returns('login_hint' => 'john.doe@example.com', 'ui_locales' => 'en', 'claims_locales' => 'es')
@@ -101,7 +94,7 @@ module OmniAuth
       end
 
       def test_request_phase_with_discovery
-        expected_redirect = %r{^https://example\.com/authorization\?client_id=1234&nonce=\w{32}&response_type=code&scope=openid&state=\w{32}$}
+        expected_redirect = %r{^https://example\.com/authorization\?client_id=1234&code_challenge=[\w-]{43}&code_challenge_method=S256&nonce=\w{32}&response_type=code&scope=openid&state=\w{32}$}
         strategy.options.client_options.host = 'example.com'
         strategy.options.discovery = true
 
@@ -128,9 +121,9 @@ module OmniAuth
       end
 
       def test_request_phase_with_response_mode
-        expected_redirect = %r{^https://example\.com/authorize\?client_id=1234&nonce=\w{32}&response_mode=form_post&response_type=id_token&scope=openid&state=\w{32}$}
+        expected_redirect = %r{^https://example\.com/authorize\?client_id=1234&code_challenge=[\w-]{43}&code_challenge_method=S256&nonce=\w{32}&response_mode=query&response_type=id_token&scope=openid&state=\w{32}$}
         strategy.options.issuer = 'example.com'
-        strategy.options.response_mode = 'form_post'
+        strategy.options.response_mode = 'query'
         strategy.options.response_type = 'id_token'
         strategy.options.client_options.host = 'example.com'
 
@@ -139,14 +132,22 @@ module OmniAuth
       end
 
       def test_request_phase_with_response_mode_symbol
-        expected_redirect = %r{^https://example\.com/authorize\?client_id=1234&nonce=\w{32}&response_mode=form_post&response_type=id_token&scope=openid&state=\w{32}$}
+        expected_redirect = %r{^https://example\.com/authorize\?client_id=1234&code_challenge=[\w-]{43}&code_challenge_method=S256&nonce=\w{32}&response_mode=query&response_type=id_token&scope=openid&state=\w{32}$}
         strategy.options.issuer = 'example.com'
-        strategy.options.response_mode = 'form_post'
+        strategy.options.response_mode = :query
         strategy.options.response_type = :id_token
         strategy.options.client_options.host = 'example.com'
 
         strategy.expects(:redirect).with(regexp_matches(expected_redirect))
         strategy.request_phase
+      end
+
+      def test_request_phase_with_form_post_response_mode
+        strategy.options.issuer = 'example.com'
+        strategy.options.client_options.host = 'example.com'
+        strategy.options.response_mode = 'form_post'
+
+        assert_raises(OmniAuth::OpenIDConnect::ConfigurationError) { strategy.request_phase }
       end
 
       def test_option_acr_values
@@ -182,10 +183,7 @@ module OmniAuth
       def test_uid
         assert_equal user_info.sub, strategy.uid
 
-        strategy.options.uid_field = 'preferred_username'
-        assert_equal user_info.preferred_username, strategy.uid
-
-        strategy.options.uid_field = 'something'
+        strategy.options.uid_field = 'email'
         assert_equal user_info.sub, strategy.uid
       end
 
@@ -208,15 +206,17 @@ module OmniAuth
         access_token.stubs(:scope)
         access_token.stubs(:id_token).returns(jwt.to_s)
         client.expects(:access_token!).at_least_once.returns(access_token)
-        access_token.expects(:userinfo!).returns(user_info)
+        access_token.expects(:userinfo!).never
 
         id_token = stub('OpenIDConnect::ResponseObject::IdToken')
         id_token.stubs(:raw_attributes).returns('sub' => 'sub', 'name' => 'name', 'email' => 'email')
         id_token.stubs(:verify!).with(issuer: strategy.options.issuer, client_id: @identifier, nonce: nonce).returns(true)
         id_token.expects(:verify!)
 
-        strategy.expects(:decode_id_token).twice.with(access_token.id_token).returns(id_token)
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.expects(:decode_id_token).once.with(access_token.id_token).returns(id_token)
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce,
+                                           'omniauth.pkce.verifier.openid_connect' => 'verifier' })
+        strategy.expects(:fail!).never
         strategy.callback_phase
       end
 
@@ -244,7 +244,8 @@ module OmniAuth
         ::OpenIDConnect::ResponseObject::IdToken.stubs(:decode).returns(id_token)
         id_token.expects(:verify!)
 
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        strategy.expects(:fail!).never
         strategy.callback_phase
       end
 
@@ -265,11 +266,12 @@ module OmniAuth
         strategy.stubs(:decode_id_token).returns(id_token)
         strategy.stubs(:stored_state).returns(state)
 
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        strategy.expects(:fail!).never
         strategy.callback_phase
       end
 
-      def test_callback_phase_with_id_token_and_param_provided_nonce # rubocop:disable Metrics/AbcSize
+      def test_callback_phase_with_id_token_and_param_provided_nonce
         code = SecureRandom.hex(16)
         state = SecureRandom.hex(16)
         nonce = SecureRandom.hex(16)
@@ -289,15 +291,13 @@ module OmniAuth
         access_token.stubs(:scope)
         access_token.stubs(:id_token).returns(jwt.to_s)
         client.expects(:access_token!).at_least_once.returns(access_token)
-        access_token.expects(:userinfo!).returns(user_info)
+        access_token.expects(:userinfo!).never
 
-        id_token = stub('OpenIDConnect::ResponseObject::IdToken')
-        id_token.stubs(:raw_attributes).returns('sub' => 'sub', 'name' => 'name', 'email' => 'email')
-        id_token.stubs(:verify!).with(issuer: strategy.options.issuer, client_id: @identifier, nonce: nonce).returns(true)
-        id_token.expects(:verify!)
-
-        strategy.expects(:decode_id_token).twice.with(access_token.id_token).returns(id_token)
-        strategy.call!('rack.session' => { 'omniauth.state' => state })
+        # The nonce comes from the session only; a nonce in the callback request is ignored.
+        strategy.expects(:decode_id_token).never
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state,
+                                           'omniauth.pkce.verifier.openid_connect' => 'verifier' })
+        strategy.expects(:fail!).with(:missing_nonce, is_a(OmniAuth::Strategies::OpenIDConnect::CallbackError))
         strategy.callback_phase
       end
 
@@ -316,7 +316,8 @@ module OmniAuth
         strategy.options.response_type = 'id_token'
 
         strategy.unstub(:user_info)
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        strategy.expects(:fail!).never
         strategy.callback_phase
       end
 
@@ -336,7 +337,8 @@ module OmniAuth
         strategy.options.response_type = 'id_token'
 
         strategy.unstub(:user_info)
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        strategy.expects(:fail!).never
         strategy.callback_phase
       end
 
@@ -357,11 +359,10 @@ module OmniAuth
         strategy.options.response_type = 'id_token'
 
         strategy.unstub(:user_info)
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
 
-        assert_raises JSON::JWK::Set::KidNotFound do
-          strategy.callback_phase
-        end
+        strategy.expects(:fail!).with(:invalid_id_token, is_a(JSON::JWK::Set::KidNotFound))
+        strategy.callback_phase
       end
 
       def test_callback_phase_with_id_token_with_hs256
@@ -375,7 +376,8 @@ module OmniAuth
         strategy.options.response_type = 'id_token'
 
         strategy.unstub(:user_info)
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        strategy.expects(:fail!).never
         strategy.callback_phase
       end
 
@@ -386,10 +388,12 @@ module OmniAuth
 
         strategy.options.issuer = issuer
         strategy.options.jwt_secret_base64 = Base64.encode64(hmac_secret)
+        strategy.options.client_signing_alg = :HS256
         strategy.options.response_type = 'id_token'
 
         strategy.unstub(:user_info)
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        strategy.expects(:fail!).never
         strategy.callback_phase
       end
 
@@ -404,7 +408,7 @@ module OmniAuth
         strategy.options.response_type = 'id_token'
 
         strategy.unstub(:user_info)
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
 
         strategy.expects(:fail!).with(:invalid_jwt_algorithm, is_a(OmniAuth::Strategies::OpenIDConnect::CallbackError))
         strategy.callback_phase
@@ -426,11 +430,10 @@ module OmniAuth
         strategy.options.response_type = 'id_token'
 
         strategy.unstub(:user_info)
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
 
-        assert_raises JSON::JWK::Set::KidNotFound do
-          strategy.callback_phase
-        end
+        strategy.expects(:fail!).with(:invalid_id_token, is_a(JSON::JWK::Set::KidNotFound))
+        strategy.callback_phase
       end
 
       def test_callback_phase_with_discovery # rubocop:disable Metrics/AbcSize
@@ -468,9 +471,11 @@ module OmniAuth
         access_token.stubs(:scope)
         access_token.stubs(:id_token).returns(jwt.to_s)
         client.expects(:access_token!).at_least_once.returns(access_token)
-        access_token.expects(:userinfo!).returns(user_info)
+        access_token.expects(:userinfo!).never
 
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce,
+                                           'omniauth.pkce.verifier.openid_connect' => 'verifier' })
+        strategy.expects(:fail!).never
         strategy.callback_phase
       end
 
@@ -512,9 +517,11 @@ module OmniAuth
         access_token.stubs(:scope)
         access_token.stubs(:id_token).returns(jwt.to_s)
         client.expects(:access_token!).at_least_once.returns(access_token)
-        access_token.expects(:userinfo!).returns(user_info)
+        access_token.expects(:userinfo!).never
 
-        strategy.call!('rack.session' => { 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.nonce.openid_connect' => nonce,
+                                           'omniauth.pkce.verifier.openid_connect' => 'verifier' })
+        strategy.expects(:fail!).never
         strategy.callback_phase
       end
 
@@ -555,9 +562,11 @@ module OmniAuth
         access_token.stubs(:scope)
         access_token.stubs(:id_token).returns(jwt.to_s)
         client.expects(:access_token!).at_least_once.returns(access_token)
-        access_token.expects(:userinfo!).returns(user_info)
+        access_token.expects(:userinfo!).never
 
-        strategy.call!('rack.session' => { 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.nonce.openid_connect' => nonce,
+                                           'omniauth.pkce.verifier.openid_connect' => 'verifier' })
+        strategy.expects(:fail!).never
         strategy.callback_phase
       end
 
@@ -570,7 +579,7 @@ module OmniAuth
         request.stubs(:params).returns('code' => code, 'state' => 'foobar')
         request.stubs(:path).returns('')
 
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
         strategy.expects(:fail!)
         strategy.callback_phase
       end
@@ -604,7 +613,8 @@ module OmniAuth
         ::OpenIDConnect::ResponseObject::IdToken.stubs(:decode).returns(id_token)
         id_token.expects(:verify!)
 
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        strategy.expects(:fail!).never
         strategy.callback_phase
       end
 
@@ -613,7 +623,8 @@ module OmniAuth
         request.stubs(:params).returns('error' => 'invalid_request')
         request.stubs(:path).returns('')
 
-        strategy.call!({ 'rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce } })
+        strategy.call!({ 'rack.session' => { 'omniauth.state.openid_connect' => state,
+                                             'omniauth.nonce.openid_connect' => nonce } })
         strategy.expects(:fail!)
         strategy.callback_phase
       end
@@ -624,7 +635,7 @@ module OmniAuth
         request.stubs(:params).returns('code' => code, 'state' => 'foobar')
         request.stubs(:path).returns('')
 
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
         strategy.expects(:fail!)
         strategy.callback_phase
       end
@@ -634,7 +645,7 @@ module OmniAuth
         request.stubs(:params).returns('state' => state)
         request.stubs(:path).returns('')
 
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
 
         strategy.expects(:fail!).with(:missing_code, is_a(OmniAuth::OpenIDConnect::MissingCodeError))
         strategy.callback_phase
@@ -646,7 +657,7 @@ module OmniAuth
         request.stubs(:path).returns('')
         strategy.options.response_type = 'id_token'
 
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
 
         strategy.expects(:fail!).with(:missing_id_token, is_a(OmniAuth::OpenIDConnect::MissingIdTokenError))
         strategy.callback_phase
@@ -658,7 +669,7 @@ module OmniAuth
         request.stubs(:path).returns('')
         strategy.options.response_type = :id_token
 
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
 
         strategy.expects(:fail!).with(:missing_id_token, is_a(OmniAuth::OpenIDConnect::MissingIdTokenError))
         strategy.callback_phase
@@ -673,7 +684,7 @@ module OmniAuth
         strategy.options.issuer = 'example.com'
 
         strategy.stubs(:access_token).raises(::Timeout::Error.new('error'))
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
         strategy.expects(:fail!)
 
         id_token = stub('OpenIDConnect::ResponseObject::IdToken')
@@ -692,7 +703,7 @@ module OmniAuth
         strategy.options.issuer = 'example.com'
 
         strategy.stubs(:access_token).raises(::Errno::ETIMEDOUT.new('error'))
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
         strategy.expects(:fail!)
 
         id_token = stub('OpenIDConnect::ResponseObject::IdToken')
@@ -711,7 +722,7 @@ module OmniAuth
         strategy.options.issuer = 'example.com'
 
         strategy.stubs(:access_token).raises(::SocketError.new('error'))
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
         strategy.expects(:fail!)
 
         id_token = stub('OpenIDConnect::ResponseObject::IdToken')
@@ -730,7 +741,7 @@ module OmniAuth
         strategy.options.issuer = 'example.com'
 
         strategy.stubs(:access_token).raises(::Rack::OAuth2::Client::Error.new('error', error: 'Unknown'))
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
         strategy.expects(:fail!)
 
         id_token = stub('OpenIDConnect::ResponseObject::IdToken')
@@ -743,8 +754,8 @@ module OmniAuth
       def test_info
         info = strategy.info
         assert_equal user_info.name, info[:name]
-        assert_equal user_info.email, info[:email]
-        assert_equal user_info.email_verified, info[:email_verified]
+        refute info.key?(:email)
+        refute info.key?(:email_verified)
         assert_equal user_info.preferred_username, info[:nickname]
         assert_equal user_info.given_name, info[:first_name]
         assert_equal user_info.family_name, info[:last_name]
@@ -765,6 +776,7 @@ module OmniAuth
 
         id_token = stub('OpenIDConnect::ResponseObject::IdToken')
         id_token.stubs(:verify!).returns(true)
+        id_token.stubs(:raw_attributes).returns(payload)
         ::OpenIDConnect::ResponseObject::IdToken.stubs(:decode).returns(id_token)
 
         access_token = stub('OpenIDConnect::AccessToken')
@@ -775,6 +787,8 @@ module OmniAuth
         access_token.stubs(:id_token).returns(jwt.to_s)
 
         client.expects(:access_token!).returns(access_token)
+        strategy.stubs(:stored_nonce).returns(nonce)
+        strategy.stubs(:stored_code_verifier).returns('verifier')
         access_token.expects(:refresh_token).returns(access_token.refresh_token)
         access_token.expects(:expires_in).returns(access_token.expires_in)
 
@@ -856,7 +870,7 @@ module OmniAuth
         opts = strategy.options.client_options
         opts[:host] = 'foobar.com'
         strategy.options.issuer = 'foobar.com'
-        strategy.options.client_auth_method = :not_basic
+        strategy.options.client_auth_method = :post
         strategy.options.client_signing_alg = :RS256
         strategy.options.client_jwk_signing_key = jwks.to_json
 
@@ -867,14 +881,17 @@ module OmniAuth
         }
 
         request.stubs(:path).returns('')
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce,
+                                           'omniauth.pkce.verifier.openid_connect' => 'verifier' })
 
         id_token = stub('OpenIDConnect::ResponseObject::IdToken')
         id_token.stubs(:verify!).with(issuer: strategy.options.issuer, client_id: @identifier, nonce: nonce).returns(true)
+        id_token.stubs(:raw_attributes).returns(payload)
         ::OpenIDConnect::ResponseObject::IdToken.stubs(:decode).returns(id_token)
 
         url = "#{ opts.scheme }://#{ opts.host }:#{ opts.port }#{ opts.token_endpoint }"
-        body = { scope: 'openid', grant_type: 'client_credentials', client_id: @identifier, client_secret: @secret }
+        body = { scope: 'openid', grant_type: 'client_credentials', client_id: @identifier, client_secret: @secret,
+                 code_verifier: 'verifier' }
 
         stub_request(:post, url).with(body: body).to_return(
           body: json_response.to_json,
@@ -926,7 +943,8 @@ module OmniAuth
         strategy.stubs(:decode_id_token).returns(id_token)
         strategy.stubs(:stored_state).returns(state)
 
-        strategy.call!('rack.session' => { 'omniauth.state' => state, 'omniauth.nonce' => nonce })
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        strategy.expects(:fail!).never
         strategy.callback_phase
 
         auth_hash = strategy.send(:env)['omniauth.auth']
