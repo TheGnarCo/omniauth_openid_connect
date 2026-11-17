@@ -69,7 +69,8 @@ fetched.
 
 `csrf_detected`, the provider's error code (for example `access_denied`, `invalid_grant`, `invalid_client`),
 `provider_error`, `missing_nonce`, `missing_code_verifier`, `missing_code`, `missing_id_token`, `invalid_id_token`,
-`invalid_jwt_algorithm`, `discovery_failed`, `jwks_failed`, `timeout`, `failed_to_connect`.
+`invalid_jwt_algorithm`, `invalid_response`, `discovery_failed`, `jwks_failed`, `timeout`, `failed_to_connect`.
+Configuration problems raise `OmniAuth::OpenIDConnect::ConfigurationError` instead of failing the sign-in.
 
 ### Left to the application
 
