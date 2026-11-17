@@ -152,18 +152,18 @@ module OmniAuth
       {
         'wrong iss' => [{ claims: { iss: 'https://evil.example.test/v2.0' } }, :invalid_id_token],
         'wrong aud' => [{ claims: { aud: 'someone-else' } }, :invalid_id_token],
-        'expired exp' => [{ claims: { exp: Time.now.to_i - 10 } }, :invalid_id_token],
+        'expired exp' => [-> { { claims: { exp: Time.now.to_i - 10 } } }, :invalid_id_token],
         'missing exp' => [{ remove_claims: [:exp] }, :invalid_id_token],
         'alg none' => [{ alg: 'none' }, :invalid_jwt_algorithm],
         'alg HS256 empty key' => [{ alg: 'HS256' }, :invalid_jwt_algorithm],
         'alg HS256 public key as secret' => [{ alg: 'HS256_pubkey' }, :invalid_jwt_algorithm],
         'unknown signing key' => [{ unknown_key: true }, :invalid_id_token],
-        'nbf beyond the leeway' => [{ claims: { nbf: Time.now.to_i + 120 } }, :invalid_id_token],
+        'nbf beyond the leeway' => [-> { { claims: { nbf: Time.now.to_i + 62 } } }, :invalid_id_token],
         'several audiences without azp' => [{ claims: { aud: [FakeEntra::CLIENT_ID, 'other'] } }, :invalid_id_token],
         'azp naming another client' => [{ claims: { azp: 'other' } }, :invalid_id_token],
       }.each_with_index do |(label, (knobs, type)), i|
         define_method(format('test_t09_%<i>02d_rejects_%<label>s', i: i, label: label.tr(' ', '_'))) do
-          @fake.configure(**knobs)
+          @fake.configure(**(knobs.respond_to?(:call) ? knobs.call : knobs))
           assert_clean_failure browser.sign_in('entra'), type
         end
       end
@@ -172,6 +172,20 @@ module OmniAuth
         @fake.configure(claims: { aud: ['other', FakeEntra::CLIENT_ID], azp: FakeEntra::CLIENT_ID })
         result = browser.sign_in('entra')
         assert result.ok?, result.failure.inspect
+      end
+
+      def test_t09_accepts_nbf_at_the_leeway_and_honours_the_option
+        @fake.configure(claims: { nbf: Time.now.to_i + 60 })
+        result = browser.sign_in('entra')
+        assert result.ok?, result.failure.inspect
+        @fake.configure(claims: { nbf: Time.now.to_i + 30 })
+        assert_clean_failure browser(nbf_leeway: 0).sign_in('entra'), :invalid_id_token
+      end
+
+      def test_t04_pkce_method_other_than_s256_is_refused
+        options = provider_options('entra', pkce_options: { code_challenge: ->(v) { v }, code_challenge_method: 'plain' })
+        strategy = OmniAuth::Strategies::OpenIDConnect.new(nil, options)
+        assert_raises(OmniAuth::OpenIDConnect::ConfigurationError) { strategy.request_phase }
       end
 
       def test_t09_accepts_nbf_inside_the_leeway

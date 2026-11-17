@@ -8,7 +8,7 @@ module OmniAuth
   module Strategies
     # Discovery and key set fetching: cache, stale and negative results, timeouts, https and host checks,
     # and provider text from the token endpoint.
-    class OpenIDConnectFetchTest < Minitest::Test
+    class OpenIDConnectFetchTest < Minitest::Test # rubocop:disable Metrics/ClassLength
       include OidcHarness
 
       DESCRIPTION = 'attacker-controlled <b>text</b> 4711'
@@ -38,6 +38,29 @@ module OmniAuth
         }
         assert_equal(expected, expected.keys.to_h { |k| [k, defaults[k]] })
         assert_equal 'S256', defaults[:pkce_options][:code_challenge_method]
+        assert_equal 60, defaults[:jwks_min_refresh_interval]
+        assert_equal 512 * 1024, OmniAuth::Strategies::OpenIDConnect::MAX_FETCH_BYTES
+      end
+
+      # Records the timeouts on every Faraday request made through the net_http adapter while recording is on.
+      module RequestRecorder
+        def call(env)
+          log = Thread.current[:oidc_faraday_requests]
+          log << [env.url.to_s, env.request.open_timeout, env.request.timeout] if log
+          super
+        end
+      end
+      Faraday::Adapter::NetHttp.prepend(RequestRecorder)
+
+      def test_default_timeouts_reach_discovery_key_set_and_token_requests
+        Thread.current[:oidc_faraday_requests] = []
+        assert browser.sign_in('entra').ok?
+        seen = Thread.current[:oidc_faraday_requests]
+        [@fake.discovery_url, @fake.jwks_url, @fake.token_url].each do |url|
+          assert_includes seen, [url, 3, 5], "#{url} in #{seen.inspect}"
+        end
+      ensure
+        Thread.current[:oidc_faraday_requests] = nil
       end
 
       def test_cold_sign_in_fetches_once_and_warm_sign_in_not_at_all
@@ -50,11 +73,14 @@ module OmniAuth
 
       def test_refetches_after_the_ttl
         freeze_clock
-        b = browser(metadata_ttl: 60, jwks_ttl: 60)
+        b = browser(metadata_ttl: 60, jwks_ttl: 120)
         assert b.sign_in('entra').ok?
         @now += 61
         assert Browser.new(b.app, @fake).sign_in('entra').ok?
-        assert_equal [2, 2], [counts[:discovery], counts[:jwks]]
+        assert_equal [2, 1], [counts[:discovery], counts[:jwks]]
+        @now += 60
+        assert Browser.new(b.app, @fake).sign_in('entra').ok?
+        assert_equal [3, 2], [counts[:discovery], counts[:jwks]]
       end
 
       def test_unknown_kid_forces_exactly_one_refresh
@@ -201,6 +227,25 @@ module OmniAuth
         assert_equal 1, counts[:discovery]
       end
 
+      def test_redirect_with_a_location_is_not_followed
+        evil = stub_request(:any, /evil\.example\.test/)
+        stub_request(:get, @fake.discovery_url).to_return(status: 302, headers: { 'Location' => 'https://evil.example.test/doc' })
+        assert_clean_failure browser.start('entra'), :discovery_failed
+        assert_not_requested evil
+      end
+
+      def test_error_status_with_a_valid_document_is_refused
+        good = Net::HTTP.get_response(URI(@fake.discovery_url)).body
+        @fake.reset!.configure(discovery_status: 500, discovery_body: good)
+        assert_clean_failure browser.start('entra'), :discovery_failed
+      end
+
+      def test_oversized_key_set_is_refused
+        stub_request(:get, @fake.jwks_url)
+          .to_return(body: JSON.generate(keys: ['x' * (512 * 1024)]), headers: { 'content-type' => 'application/json' })
+        assert_clean_failure browser.sign_in('entra'), :jwks_failed
+      end
+
       def test_oversized_metadata_is_refused
         @fake.configure(discovery_overrides: { padding: 'x' * (OmniAuth::Strategies::OpenIDConnect::MAX_FETCH_BYTES + 1) })
         assert_clean_failure browser.start('entra'), :discovery_failed
@@ -216,6 +261,20 @@ module OmniAuth
         @fake.configure(discovery_overrides: { token_endpoint: 'https://evil.example.test/token' })
         assert_clean_failure browser.sign_in('entra'), :discovery_failed
         assert_not_requested evil
+      end
+
+      def test_authorization_and_end_session_endpoints_on_another_host_are_refused
+        %i[authorization_endpoint end_session_endpoint].each do |endpoint|
+          clear_fetch_cache
+          @fake.configure(discovery_overrides: { endpoint => 'https://evil.example.test/x' })
+          assert_clean_failure browser.start('entra'), :discovery_failed
+        end
+      end
+
+      def test_document_for_one_issuer_is_not_shared_with_a_provider_expecting_another
+        assert browser.sign_in('entra').ok?
+        other = browser({ issuer: "https://#{FakeEntra::HOST}/other-tenant/v2.0" }, 'other')
+        assert_clean_failure other.start('other'), :discovery_failed
       end
 
       def test_allowed_endpoint_hosts_admits_a_second_host
