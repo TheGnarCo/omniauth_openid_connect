@@ -67,6 +67,16 @@ module OmniAuth
         assert_equal 'v2', fetch(replace: first) { 'v2' }
       end
 
+      def test_forced_refreshes_are_limited_to_one_per_min_replace_interval
+        loads = 0
+        value = fetch { loads += 1 }
+        2.times { value = fetch(replace: value, min_replace_interval: 60) { loads += 1 } }
+        assert_equal 2, loads
+        @now += 61
+        fetch(replace: value, min_replace_interval: 60) { loads += 1 }
+        assert_equal 3, loads
+      end
+
       def test_stale_value_is_served_inside_the_stale_window_and_logged
         fetch { 'v1' }
         @now += 70

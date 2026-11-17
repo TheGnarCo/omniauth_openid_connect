@@ -65,6 +65,34 @@ module OmniAuth
         assert_equal 2, counts[:jwks]
       end
 
+      # In the id_token response type the token comes from the callback request, so a caller who starts their own
+      # sign-ins can send tokens with unknown kids. Forced key set refreshes must be rate limited across requests.
+      def forged_id_token_callback(browser, claims = {})
+        state = OidcHarness.param(browser.start('entra'), 'state')
+        now = Time.now.to_i
+        payload = { iss: @fake.issuer, aud: FakeEntra::CLIENT_ID, sub: 'x', iat: now, exp: now + 300 }.merge(claims)
+        token = JSON::JWT.new(payload).sign(JSON::JWK.new(FakeEntra::KEY_POOL.last), :RS256).to_s
+        browser.callback("/auth/entra/callback?#{URI.encode_www_form('state' => state, 'id_token' => token)}")
+      end
+
+      def test_unknown_kids_from_the_callback_force_at_most_one_refresh_per_interval
+        freeze_clock
+        b = browser(response_type: 'id_token')
+        3.times { assert_clean_failure forged_id_token_callback(b), :invalid_id_token }
+        assert_equal 2, counts[:jwks], 'one initial fetch and one forced refresh'
+        @now += 61
+        assert_clean_failure forged_id_token_callback(b), :invalid_id_token
+        assert_equal 3, counts[:jwks]
+      end
+
+      def test_unknown_kid_with_wrong_issuer_audience_or_expiry_forces_no_refresh
+        b = browser(response_type: 'id_token')
+        [{ iss: 'https://evil.example.test/v2.0' }, { aud: 'other' }, { exp: Time.now.to_i - 10 }].each do |claims|
+          assert_clean_failure forged_id_token_callback(b, claims), :invalid_id_token
+        end
+        assert_equal 1, counts[:jwks]
+      end
+
       def test_failed_discovery_is_remembered_for_negative_ttl
         freeze_clock
         @fake.configure(discovery_status: 500)

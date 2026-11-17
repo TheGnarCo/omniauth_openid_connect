@@ -26,6 +26,7 @@ disagree, this section is right.
 | Authorization, token, key set and end-session endpoints from discovery must be https on an allowed host. | `allowed_endpoint_hosts` | the `discovery_url` host |
 | Discovery document and key set cached per process. One fetch at a time per URL; a failed fetch is remembered; an expired value is served while its refresh fails, logged at ERROR, with a shorter cap for keys. A token with an unknown `kid` forces one key set refresh. | `metadata_ttl`, `jwks_ttl`, `stale_ttl`, `jwks_stale_ttl`, `negative_ttl` | `3600`, `900`, `3600`, `300`, `10` seconds |
 | Discovery and key set responses: no redirects followed, at most 512 KB, no compression. | | |
+| Forced key set refreshes (unknown `kid`) happen at most once per interval per key set, and only for a token whose unverified `iss`, `aud` and `exp` are already right, so callers cannot force one fetch per request. | `jwks_min_refresh_interval` | `60` seconds |
 | Open and read timeouts on discovery, key set and token requests, set per request (not through the global `OpenIDConnect.http_config`). | `open_timeout`, `read_timeout` | `3`, `5` seconds |
 | `redirect_uri` is always the configured value; a `redirect_uri` request parameter is ignored. | `client_options.redirect_uri` | |
 | `response_mode` must be unset or `query`; anything else raises `ConfigurationError`. | `response_mode` | unset |

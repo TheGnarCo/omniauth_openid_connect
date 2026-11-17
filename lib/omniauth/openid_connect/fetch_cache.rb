@@ -24,6 +24,7 @@ module OmniAuth
       def initialize(clock: nil)
         self.clock = clock
         @entries = {}
+        @replaced_at = {}
         @locks = {}
         @guard = Mutex.new
       end
@@ -34,12 +35,17 @@ module OmniAuth
       end
 
       def clear!
-        @guard.synchronize { @entries.clear }
+        @guard.synchronize do
+          @entries.clear
+          @replaced_at.clear
+        end
       end
 
       # key is [kind, ...]. replace is a value the caller found unusable (a key set without the needed kid): the
-      # entry is refreshed unless another caller already replaced that value.
-      def fetch(key, ttl:, negative_ttl:, stale_ttl:, replace: nil, &block)
+      # entry is refreshed unless another caller already replaced that value, or a refresh forced this way happened
+      # less than min_replace_interval seconds ago. The interval stops callers from forcing one fetch per request.
+      def fetch(key, ttl:, negative_ttl:, stale_ttl:, replace: nil, min_replace_interval: 0, &block) # rubocop:disable Metrics/ParameterLists
+        replace = nil if replace && recently_replaced?(key, min_replace_interval)
         entry = read(key)
         return entry.value if usable?(entry, ttl, replace)
 
@@ -48,6 +54,7 @@ module OmniAuth
           return entry.value if usable?(entry, ttl, replace)
           return stale_or_raise(key, entry, ttl, stale_ttl) if entry&.failed_until && now < entry.failed_until
 
+          @guard.synchronize { @replaced_at[key] = now } if replace
           load_entry(key, entry, ttl, negative_ttl, stale_ttl, &block)
         end
       end
@@ -64,6 +71,11 @@ module OmniAuth
 
       def write(key, entry)
         @guard.synchronize { @entries[key] = entry }
+      end
+
+      def recently_replaced?(key, interval)
+        at = @guard.synchronize { @replaced_at[key] }
+        at && now - at < interval
       end
 
       def usable?(entry, ttl, replace)

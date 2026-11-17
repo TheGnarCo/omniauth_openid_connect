@@ -98,6 +98,7 @@ module OmniAuth
       option :stale_ttl, 3600
       option :jwks_stale_ttl, 300
       option :negative_ttl, 10
+      option :jwks_min_refresh_interval, 60
 
       # Gnar: always the ID token's sub. Email and other mutable claims are never the uid.
       def uid
@@ -543,9 +544,20 @@ module OmniAuth
       rescue ::JSON::JWK::Set::KidNotFound
         raise unless options.discovery_url && !@jwks_refreshed
 
+        precheck_unverified_claims!(id_token)
         @jwks_refreshed = true
         @public_key = cached_jwks(replace: @public_key)
         retry
+      end
+
+      # Before an unknown kid may force a key set refresh, the claims that need no key must already be right, so a
+      # token that would fail anyway costs no fetch. This reads the unverified payload; it is not a validation.
+      def precheck_unverified_claims!(id_token)
+        claims = JSON::JWT.decode(id_token, :skip_verification)
+        audience = client_options.audience || client_options.identifier
+        return if claims['iss'] == options.issuer && Array(claims['aud']).include?(audience) && claims['exp'].to_i > Time.now.to_i
+
+        raise ::OpenIDConnect::ResponseObject::IdToken::InvalidToken, 'Invalid ID token: claims fail before key lookup'
       end
 
       def verify_nbf!(id_token)
@@ -626,7 +638,9 @@ module OmniAuth
       def cached_jwks(replace: nil)
         uri = config.jwks_uri
         # The key set's check reads only the URI. The URI comes from a document validated under this provider's key.
-        fetch_cached([:jwks, uri, options.issuer], options.jwks_ttl, options.jwks_stale_ttl, replace: replace) do
+        key = [:jwks, uri, options.issuer]
+        fetch_cached(key, options.jwks_ttl, options.jwks_stale_ttl,
+                     replace: replace, min_replace_interval: options.jwks_min_refresh_interval) do
           keys = fetch_json(uri)['keys']
           raise ::OmniAuth::OpenIDConnect::HttpResponseError, 'key set has no keys' unless keys.is_a?(Array) && keys.any?
 
@@ -634,9 +648,9 @@ module OmniAuth
         end
       end
 
-      def fetch_cached(key, ttl, stale_ttl, replace: nil, &block)
+      def fetch_cached(key, ttl, stale_ttl, replace: nil, min_replace_interval: 0, &block)
         self.class.fetch_cache.fetch(key, ttl: ttl, negative_ttl: options.negative_ttl, stale_ttl: stale_ttl,
-                                          replace: replace, &block)
+                                          replace: replace, min_replace_interval: min_replace_interval, &block)
       end
 
       # The discovery document's issuer must equal the configured issuer, and every endpoint the strategy uses must be
