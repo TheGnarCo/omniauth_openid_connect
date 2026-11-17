@@ -75,6 +75,55 @@ module OmniAuth
         browser.callback("/auth/entra/callback?#{URI.encode_www_form('state' => state, 'id_token' => token)}")
       end
 
+      def test_unexpected_token_type_is_a_clean_failure_without_its_text
+        @fake.configure(token_overrides: { token_type: 'providertext<b>4711' })
+        result = browser.sign_in('entra')
+        assert_clean_failure result, :invalid_response
+        refute_includes result.failure[:message].to_s + result.log, 'providertext'
+      end
+
+      def test_non_json_token_response_is_a_clean_failure
+        @fake.configure(token_body: 'providertext not json')
+        result = browser.sign_in('entra')
+        assert_clean_failure result, :invalid_response
+        refute_includes result.failure[:message].to_s + result.log, 'providertext'
+      end
+
+      def raw_id_token_callback(browser, header, payload, extra = {})
+        state = OidcHarness.param(browser.start('entra'), 'state')
+        parts = [header, payload].map { |part| Base64.urlsafe_encode64(JSON.generate(part), padding: false) }
+        token = "#{parts.join('.')}.c2ln"
+        browser.callback("/auth/entra/callback?#{URI.encode_www_form({ 'state' => state, 'id_token' => token }.merge(extra))}")
+      end
+
+      def test_id_token_without_alg_or_with_a_non_object_payload_is_a_clean_failure
+        b = browser(response_type: 'id_token')
+        refute_equal 500, raw_id_token_callback(b, { typ: 'JWT' }, { iss: @fake.issuer }).status
+        assert_clean_failure raw_id_token_callback(b, { typ: 'JWT' }, { iss: @fake.issuer }), :invalid_jwt_algorithm
+        assert_clean_failure raw_id_token_callback(b, { alg: 'RS256', typ: 'JWT' }, [1, 2]), :invalid_response
+      end
+
+      def test_error_uri_and_token_alg_header_stay_out_of_failure_and_log
+        b = browser(response_type: 'id_token')
+        result = raw_id_token_callback(b, { alg: 'HS256', typ: 'JWT' }, { iss: @fake.issuer },
+                                       'error_uri' => 'PROVIDERTEXT<b>4711')
+        assert_clean_failure result, :invalid_jwt_algorithm
+        refute_includes result.failure[:message].to_s + result.log, 'PROVIDERTEXT'
+        refute_includes result.failure[:message].to_s, 'HS256'
+      end
+
+      def test_configuration_error_is_raised_through_the_middleware
+        assert_raises(OmniAuth::OpenIDConnect::ConfigurationError) { browser(response_mode: 'form_post').start('entra') }
+      end
+
+      def test_missing_session_nonce_fails_before_the_code_is_redeemed
+        b = browser
+        callback = b.idp(b.start('entra'))
+        b.session.delete_if { |k, _| k.include?('nonce') }
+        assert_clean_failure b.callback(callback), :missing_nonce
+        assert_empty @fake.requests_of(:token)
+      end
+
       def test_unknown_kids_from_the_callback_force_at_most_one_refresh_per_interval
         freeze_clock
         b = browser(response_type: 'id_token')

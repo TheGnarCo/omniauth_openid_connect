@@ -290,7 +290,7 @@ module OmniAuth
         access_token.stubs(:expires_in)
         access_token.stubs(:scope)
         access_token.stubs(:id_token).returns(jwt.to_s)
-        client.expects(:access_token!).at_least_once.returns(access_token)
+        client.expects(:access_token!).never
         access_token.expects(:userinfo!).never
 
         # The nonce comes from the session only; a nonce in the callback request is ignored.

@@ -172,6 +172,7 @@ module OmniAuth
         return id_token_callback_phase if configured_response_type == 'id_token'
 
         client.authorization_code = authorization_code
+        stored_nonce
         access_token
         super
       rescue CallbackError => e
@@ -188,6 +189,9 @@ module OmniAuth
         fail!(:timeout, e)
       rescue ::SocketError, ::Faraday::ConnectionFailed => e
         fail!(:failed_to_connect, e)
+      rescue ::Faraday::ParsingError, ::OpenIDConnect::Exception, ::NoMethodError, ::TypeError, ::JSON::ParserError => e
+        # A response or token of an unexpected shape. Its message can carry provider text, so only the class is kept.
+        fail!(:invalid_response, CallbackError.new(error: :invalid_response, reason: e.class.name))
       rescue ::Faraday::Error => e
         fail!(:failed_to_connect, CallbackError.new(error: :failed_to_connect, reason: e.class.name))
       end
@@ -196,6 +200,13 @@ module OmniAuth
       # out. The app builds its own sign-out with #logout_redirect_url.
       def other_phase
         call_app!
+      end
+
+      # Gnar: OmniAuth 2.4 turns any phase error into a failure; a configuration error is raised instead.
+      def handle_phase_error(error)
+        raise error if error.is_a?(::OmniAuth::OpenIDConnect::ConfigurationError)
+
+        super
       end
 
       def authorization_code
@@ -342,7 +353,7 @@ module OmniAuth
       # https://github.com/nov/openid_connect/issues/61
       def decode_id_token(id_token)
         decoded = JSON::JWT.decode(id_token, :skip_verification)
-        algorithm = decoded.algorithm.to_sym
+        algorithm = decoded.algorithm.to_s.to_sym
 
         validate_client_algorithm!(algorithm)
 
@@ -379,8 +390,8 @@ module OmniAuth
         return unless client_signing_alg
         return if algorithm == client_signing_alg
 
-        reason = "Received JWT is signed with #{algorithm}, but client_singing_alg is configured for #{client_signing_alg}"
-        raise CallbackError, error: :invalid_jwt_algorithm, reason: reason, uri: params['error_uri']
+        # Gnar: neither the token's alg header nor error_uri from the request goes into the message.
+        raise CallbackError, error: :invalid_jwt_algorithm, reason: "JWT algorithm is not #{client_signing_alg}"
       end
 
       def decode!(id_token, key)
@@ -428,8 +439,10 @@ module OmniAuth
 
       # Gnar: a missing session nonce fails the sign-in. Otherwise a token without a nonce claim would match (nil == nil).
       def stored_nonce
+        return @stored_nonce if defined?(@stored_nonce)
+
         nonce = session.delete('omniauth.nonce')
-        return nonce unless nonce.to_s.empty? && options.send_nonce
+        return @stored_nonce = nonce unless nonce.to_s.empty? && options.send_nonce
 
         raise CallbackError, error: :missing_nonce, reason: 'No nonce in the session'
       end

@@ -161,7 +161,9 @@ class FakeEntra
 
     body = { access_token: "at-#{SecureRandom.hex(8)}", token_type: 'Bearer', expires_in: 3600, scope: 'openid profile' }
     body[:id_token] = id_token(grant) unless @knobs[:no_id_token]
-    json(200, body)
+    return json(200, @knobs[:token_body]) if @knobs[:token_body]
+
+    json(200, body.merge(@knobs[:token_overrides] || {}))
   end
 
   def logout(req)
