@@ -150,6 +150,19 @@ module OmniAuth
         assert result.ok?, result.failure.inspect
       end
 
+      # The cache is process-wide: a document accepted under a looser host list must not be reused by a provider
+      # with a stricter one, even with the same discovery URL and issuer.
+      def test_document_accepted_under_looser_hosts_is_not_shared_with_stricter_provider
+        stub_request(:any, %r{\Ahttps://keys\.example\.test/}).to_rack(@fake)
+        @fake.configure(discovery_overrides: { jwks_uri: "https://keys.example.test#{URI(@fake.jwks_url).path}" })
+        loose = browser({ allowed_endpoint_hosts: [FakeEntra::HOST, 'keys.example.test'] }, 'loose')
+        assert loose.sign_in('loose').ok?
+
+        strict = browser({}, 'strict')
+        assert_clean_failure strict.start('strict'), :discovery_failed
+        assert_equal 2, counts[:discovery]
+      end
+
       def test_discovery_url_and_issuer_must_be_https
         { discovery_url: 'http://login.example.test/x/.well-known/openid-configuration',
           issuer: 'http://login.example.test/x' }.each do |k, v|

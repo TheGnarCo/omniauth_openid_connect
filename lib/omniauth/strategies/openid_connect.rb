@@ -616,13 +616,17 @@ module OmniAuth
         false
       end
 
+      # The key holds every input the document's validation reads: the URL, the expected issuer and the allowed
+      # endpoint hosts. Providers that differ in any of them never share a document.
       def discovery_document
-        fetch_cached(:discovery, options.discovery_url, options.metadata_ttl, options.stale_ttl) { load_discovery_document }
+        key = [:discovery, options.discovery_url, options.issuer, allowed_endpoint_hosts]
+        fetch_cached(key, options.metadata_ttl, options.stale_ttl) { load_discovery_document }
       end
 
       def cached_jwks(replace: nil)
         uri = config.jwks_uri
-        fetch_cached(:jwks, uri, options.jwks_ttl, options.jwks_stale_ttl, replace: replace) do
+        # The key set's check reads only the URI. The URI comes from a document validated under this provider's key.
+        fetch_cached([:jwks, uri, options.issuer], options.jwks_ttl, options.jwks_stale_ttl, replace: replace) do
           keys = fetch_json(uri)['keys']
           raise ::OmniAuth::OpenIDConnect::HttpResponseError, 'key set has no keys' unless keys.is_a?(Array) && keys.any?
 
@@ -630,9 +634,9 @@ module OmniAuth
         end
       end
 
-      def fetch_cached(kind, url, ttl, stale_ttl, replace: nil, &block)
-        self.class.fetch_cache.fetch([kind, url, options.issuer], ttl: ttl, negative_ttl: options.negative_ttl,
-                                                                  stale_ttl: stale_ttl, replace: replace, &block)
+      def fetch_cached(key, ttl, stale_ttl, replace: nil, &block)
+        self.class.fetch_cache.fetch(key, ttl: ttl, negative_ttl: options.negative_ttl, stale_ttl: stale_ttl,
+                                          replace: replace, &block)
       end
 
       # The discovery document's issuer must equal the configured issuer, and every endpoint the strategy uses must be
@@ -654,8 +658,12 @@ module OmniAuth
       end
 
       def allowed_endpoint?(url)
-        hosts = Array(options.allowed_endpoint_hosts || URI(options.discovery_url).host).map { |h| h.to_s.downcase }
-        https_url?(url) && hosts.include?(URI(url).host.downcase)
+        https_url?(url) && allowed_endpoint_hosts.include?(URI(url).host.downcase)
+      end
+
+      # Downcased and sorted, with the discovery URL's host as the default, so equal lists give equal cache keys.
+      def allowed_endpoint_hosts
+        Array(options.allowed_endpoint_hosts || URI(options.discovery_url).host).map { |h| h.to_s.downcase }.uniq.sort
       end
 
       # GETs a JSON document with the configured timeouts, without following redirects, reading at most
