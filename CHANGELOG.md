@@ -1,5 +1,21 @@
 # Unreleased
 
+# v0.8.0.gnar.1 (The Gnar fork, based on upstream master after v0.8.0)
+
+- Check state first, in constant time; keep only checked error codes from the provider and the token endpoint
+- Read the nonce and PKCE verifier from the session only; fail when either is missing
+- Scope session keys per provider
+- Require the ID token; check `nbf` (`nbf_leeway`, 60 s) and `azp`; fail cleanly on invalid tokens and unknown keys
+- Stop calling UserInfo; `uid` is always `sub`; remove email from `info`; remove `uid_field`
+- Add `discovery_url` with an issuer check, https and endpoint host checks (`allowed_endpoint_hosts`)
+- Cache the discovery document and key set (`metadata_ttl`, `jwks_ttl`, `stale_ttl`, `jwks_stale_ttl`, `negative_ttl`),
+  refresh keys once on an unknown `kid`, cap responses at 512 KB and follow no redirects
+- Add per-request open and read timeouts (`open_timeout` 3 s, `read_timeout` 5 s) to discovery, key set and token requests
+- Default `pkce` to true with S256 enforced and `client_signing_alg` to RS256
+- Pin `redirect_uri` to the configured value
+- Refuse `response_mode` other than `query` and unknown `client_auth_method` values
+- Remove the GET logout route and `logout_path`; add `logout_redirect_url`
+
 # v0.8.0 (2024-07-04)
 
 - Add `send_state` parameter to disable sending of state (https://github.com/omniauth/omniauth_openid_connect/pull/182)
