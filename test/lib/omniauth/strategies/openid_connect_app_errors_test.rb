@@ -13,7 +13,11 @@ module OmniAuth
       def test_no_method_error_from_the_app_callback_propagates
         seen = nil
         error = assert_raises(NoMethodError) do
-          app_browser(->(env) { seen = env['omniauth.auth']; nil.undefined_in_controller }).sign_in('entra')
+          endpoint = lambda do |env|
+            seen = env['omniauth.auth']
+            nil.undefined_in_controller
+          end
+          app_browser(endpoint).sign_in('entra')
         end
         assert_match(/undefined_in_controller/, error.message)
         assert_equal FakeEntra::SUB, seen['uid']
