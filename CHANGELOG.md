@@ -1,5 +1,7 @@
 # Unreleased
 
+- Run the application's callback endpoint outside the strategy's rescues, so an exception it raises propagates instead of becoming an `invalid_response` failure
+
 # v0.8.0.gnar.1 (The Gnar fork, based on upstream master after v0.8.0)
 
 - Check state first, in constant time; keep only checked error codes from the provider and the token endpoint

@@ -149,46 +149,13 @@ module OmniAuth
         fail!(fetch_failure_key(e), e)
       end
 
-      # Gnar: the state is checked first, in constant time, before anything else in the callback is read. A provider
-      # error then becomes a failure carrying only its error code; error_description and error_uri are never used.
+      # Gnar: the application's callback endpoint runs outside the rescues of #authenticate_callback, so an exception it
+      # raises propagates unchanged instead of becoming a sign-in failure.
       def callback_phase
-        validate_options!
-        raise CallbackError, error: :csrf_detected, reason: "Invalid 'state' parameter" unless valid_state?
+        failure = authenticate_callback
+        return failure if failure
 
-        error = params['error'] || params['error_reason']
-        raise CallbackError, error: provider_error_code(error) if error
-
-        unless params.key?('code')
-          return fail!(:missing_code, OmniAuth::OpenIDConnect::MissingCodeError.new('No code in the callback'))
-        end
-
-        options.issuer = issuer if options.issuer.nil? || options.issuer.empty?
-
-        discover!
-        client.redirect_uri = redirect_uri
-        client.authorization_code = authorization_code
-        stored_nonce
-        access_token
-        super
-      rescue CallbackError => e
-        fail!(e.error, e)
-      rescue ::Rack::OAuth2::Client::Error => e
-        # The exception's message is the provider's error_description, so only a checked error code is kept.
-        code = provider_error_code(e.response.is_a?(Hash) ? e.response[:error] : nil)
-        fail!(code, CallbackError.new(error: code))
-      rescue *INVALID_ID_TOKEN_ERRORS => e
-        fail!(:invalid_id_token, e)
-      rescue ::OmniAuth::OpenIDConnect::FetchCache::FetchFailed => e
-        fail!(fetch_failure_key(e), e)
-      rescue ::Timeout::Error, ::Errno::ETIMEDOUT, ::Faraday::TimeoutError => e
-        fail!(:timeout, e)
-      rescue ::SocketError, ::Faraday::ConnectionFailed => e
-        fail!(:failed_to_connect, e)
-      rescue ::Faraday::ParsingError, ::OpenIDConnect::Exception, ::NoMethodError, ::TypeError, ::JSON::ParserError => e
-        # A response or token of an unexpected shape. Its message can carry provider text, so only the class is kept.
-        fail!(:invalid_response, CallbackError.new(error: :invalid_response, reason: e.class.name))
-      rescue ::Faraday::Error => e
-        fail!(:failed_to_connect, CallbackError.new(error: :failed_to_connect, reason: e.class.name))
+        call_app!
       end
 
       # Gnar: the gem's GET <request path>/logout route is disabled, because any page could use it to sign a person
@@ -286,6 +253,50 @@ module OmniAuth
       end
 
       private
+
+      # Gnar: the state is checked first, in constant time, before anything else in the callback is read. A provider
+      # error then becomes a failure carrying only its error code; error_description and error_uri are never used.
+      # Returns nil after storing the auth hash in env['omniauth.auth'], or the failure response.
+      def authenticate_callback
+        validate_options!
+        raise CallbackError, error: :csrf_detected, reason: "Invalid 'state' parameter" unless valid_state?
+
+        error = params['error'] || params['error_reason']
+        raise CallbackError, error: provider_error_code(error) if error
+
+        unless params.key?('code')
+          return fail!(:missing_code, OmniAuth::OpenIDConnect::MissingCodeError.new('No code in the callback'))
+        end
+
+        options.issuer = issuer if options.issuer.nil? || options.issuer.empty?
+
+        discover!
+        client.redirect_uri = redirect_uri
+        client.authorization_code = authorization_code
+        stored_nonce
+        access_token
+        env['omniauth.auth'] = auth_hash
+        nil
+      rescue CallbackError => e
+        fail!(e.error, e)
+      rescue ::Rack::OAuth2::Client::Error => e
+        # The exception's message is the provider's error_description, so only a checked error code is kept.
+        code = provider_error_code(e.response.is_a?(Hash) ? e.response[:error] : nil)
+        fail!(code, CallbackError.new(error: code))
+      rescue *INVALID_ID_TOKEN_ERRORS => e
+        fail!(:invalid_id_token, e)
+      rescue ::OmniAuth::OpenIDConnect::FetchCache::FetchFailed => e
+        fail!(fetch_failure_key(e), e)
+      rescue ::Timeout::Error, ::Errno::ETIMEDOUT, ::Faraday::TimeoutError => e
+        fail!(:timeout, e)
+      rescue ::SocketError, ::Faraday::ConnectionFailed => e
+        fail!(:failed_to_connect, e)
+      rescue ::Faraday::ParsingError, ::OpenIDConnect::Exception, ::NoMethodError, ::TypeError, ::JSON::ParserError => e
+        # A response or token of an unexpected shape. Its message can carry provider text, so only the class is kept.
+        fail!(:invalid_response, CallbackError.new(error: :invalid_response, reason: e.class.name))
+      rescue ::Faraday::Error => e
+        fail!(:failed_to_connect, CallbackError.new(error: :failed_to_connect, reason: e.class.name))
+      end
 
       def fetch_key
         @fetch_key ||= parse_jwk_key(::OpenIDConnect.http_client.get(client_options.jwks_uri).body)

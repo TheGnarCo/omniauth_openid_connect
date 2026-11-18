@@ -32,7 +32,7 @@ The callback and failure controllers, session reset on sign-in, account linking,
 ## Gotchas when changing it
 
 - OmniAuth `test_mode` is global and set to true in `test/test_helper.rb`. The matrix tests switch it off and restore it.
-- OmniAuth 2.4.1 turns any exception raised in a phase into `fail!(message)`, which could leak provider text. The strategy rescues errors itself and re-raises `ConfigurationError`.
+- OmniAuth 2.4.1 turns any exception raised in a phase into `fail!(message)`, which could leak provider text. The strategy rescues errors itself and re-raises `ConfigurationError`. The rescues cover only the library's own work (token exchange, ID token verification, building the auth hash); the application's callback endpoint runs after them, so its exceptions propagate unchanged.
 - `OpenIDConnect.http_config` is global and the first block set wins, so timeouts are set per request instead.
 - Bundler 4 cannot resolve this repo because `guard-bundler` requires Bundler below 3. Use Bundler 2.7.2.
 - Several upstream tests were changed on purpose because the behavior they check changed (session key names, UserInfo, logout, `response_mode`, `response_type`, `uid`, PKCE, HS256). `CHANGELOG.md` lists the behavior changes. Expect conflicts in `test/lib/omniauth/strategies/openid_connect_test.rb` when merging upstream.
