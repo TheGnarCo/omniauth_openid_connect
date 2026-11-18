@@ -95,7 +95,7 @@ Or install it yourself as:
 
 ## Supported Ruby Versions
 
-OmniAuth::OpenIDConnect is tested under 2.7, 3.0, 3.1, 3.2, 3.3, 3.4
+This fork is tested under Ruby 4.0, the version the portal runs. Upstream tests older Rubies, and this fork has not been run on them.
 
 ## Usage
 
