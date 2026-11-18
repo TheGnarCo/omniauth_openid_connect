@@ -13,6 +13,8 @@
 - Limit forced key set refreshes to one per `jwks_min_refresh_interval` (60 s), and only for tokens whose unverified
   `iss`, `aud` and `exp` already pass
 - Key the discovery cache by issuer and allowed endpoint hosts as well as the URL
+- Removed: the implicit flow (`response_type: id_token`), deliberately, because the portal uses only the code flow;
+  `response_type` other than `code` raises `ConfigurationError`, and `MissingIdTokenError` is gone
 - Add per-request open and read timeouts (`open_timeout` 3 s, `read_timeout` 5 s) to discovery, key set and token requests
 - Default `pkce` to true with S256 enforced and `client_signing_alg` to RS256
 - Pin `redirect_uri` to the configured value

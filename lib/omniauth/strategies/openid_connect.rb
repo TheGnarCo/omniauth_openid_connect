@@ -14,11 +14,8 @@ module OmniAuth
       include OmniAuth::Strategy
       extend Forwardable
 
-      RESPONSE_TYPE_EXCEPTIONS = {
-        'id_token' => { exception_class: OmniAuth::OpenIDConnect::MissingIdTokenError, key: :missing_id_token }.freeze,
-        'code' => { exception_class: OmniAuth::OpenIDConnect::MissingCodeError, key: :missing_code }.freeze,
-      }.freeze
-
+      # Gnar: only the authorization code flow. The implicit (id_token) flow was removed on purpose.
+      RESPONSE_TYPES = [nil, 'code'].freeze
       # Gnar: the callback is a GET carrying code and state in the query string, so no other response mode.
       RESPONSE_MODES = [nil, 'query'].freeze
       # Gnar: rack-oauth2 puts the client secret in the request body for any method name it does not know.
@@ -60,7 +57,7 @@ module OmniAuth
       option :client_jwk_signing_key
       option :client_x509_signing_key
       option :scope, [:openid]
-      option :response_type, 'code' # ['code', 'id_token']
+      option :response_type, 'code' # Gnar: 'code' only
       option :send_state, true
       option :require_state, true
       option :state
@@ -161,16 +158,14 @@ module OmniAuth
         error = params['error'] || params['error_reason']
         raise CallbackError, error: provider_error_code(error) if error
 
-        return unless valid_response_type?
+        unless params.key?('code')
+          return fail!(:missing_code, OmniAuth::OpenIDConnect::MissingCodeError.new('No code in the callback'))
+        end
 
         options.issuer = issuer if options.issuer.nil? || options.issuer.empty?
 
-        verify_id_token!(params['id_token']) if configured_response_type == 'id_token'
         discover!
         client.redirect_uri = redirect_uri
-
-        return id_token_callback_phase if configured_response_type == 'id_token'
-
         client.authorization_code = authorization_code
         stored_nonce
         access_token
@@ -232,10 +227,10 @@ module OmniAuth
         end_session_uri(id_token_hint: id_token_hint, logout_hint: logout_hint, state: state)
       end
 
-      def authorize_uri # rubocop:disable Metrics/AbcSize
+      def authorize_uri
         client.redirect_uri = redirect_uri
         opts = {
-          response_type: options.response_type,
+          response_type: 'code',
           response_mode: options.response_mode,
           scope: options.scope,
           login_hint: params['login_hint'],
@@ -338,7 +333,7 @@ module OmniAuth
         token_request_params[:code_verifier] = stored_code_verifier if options.pkce
 
         @access_token = client.access_token!(token_request_params) { |req| apply_http_timeouts(req) }
-        verify_id_token!(@access_token.id_token) if configured_response_type == 'code'
+        verify_id_token!(@access_token.id_token)
 
         @access_token
       end
@@ -508,30 +503,6 @@ module OmniAuth
           client_options.end_session_endpoint =~ URI::DEFAULT_PARSER.make_regexp
       end
 
-      def id_token_callback_phase
-        user_data = @verified_id_token.raw_attributes
-        env['omniauth.auth'] = AuthHash.new(
-          provider: name,
-          uid: user_data['sub'],
-          info: { name: user_data['name'] },
-          extra: { raw_info: user_data }
-        )
-        call_app!
-      end
-
-      def valid_response_type?
-        return true if params.key?(configured_response_type)
-
-        error_attrs = RESPONSE_TYPE_EXCEPTIONS[configured_response_type]
-        fail!(error_attrs[:key], error_attrs[:exception_class].new(params['error']))
-
-        false
-      end
-
-      def configured_response_type
-        @configured_response_type ||= options.response_type.to_s
-      end
-
       # Gnar: the ID token is required, its nonce is compared with the session's only, and nbf and azp are checked on
       # top of openid_connect's exp, iss, aud and nonce checks. The verified token is kept for #user_info.
       def verify_id_token!(id_token)
@@ -551,7 +522,9 @@ module OmniAuth
         @verified_id_token = decoded
       end
 
-      # Gnar: a kid that is not in the cached key set forces one refresh of the key set (key rotation).
+      # Gnar: a kid that is not in the cached key set forces one refresh of the key set (key rotation). The token comes
+      # from the token endpoint, never from the callback request; the refresh is still rate limited
+      # (jwks_min_refresh_interval) so a provider rotating or misbehaving cannot cause a fetch per sign-in.
       def decode_id_token_refreshing_keys(id_token)
         decode_id_token(id_token)
       rescue ::JSON::JWK::Set::KidNotFound
@@ -617,6 +590,9 @@ module OmniAuth
       end
 
       def validate_options!
+        unless RESPONSE_TYPES.include?(options.response_type&.to_s)
+          config_error!("response_type #{options.response_type.inspect} is not supported; leave it unset or use 'code'")
+        end
         unless RESPONSE_MODES.include?(options.response_mode&.to_s)
           config_error!("response_mode #{options.response_mode.inspect} is not supported; leave it unset or use 'query'")
         end

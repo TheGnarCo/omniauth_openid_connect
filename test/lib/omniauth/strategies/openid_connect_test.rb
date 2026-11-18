@@ -5,6 +5,19 @@ require_relative '../../../test_helper'
 module OmniAuth
   module Strategies
     class OpenIDConnectTest < StrategyTestCase # rubocop:disable Metrics/ClassLength
+      # Runs a code flow callback in which the token endpoint returns the given ID token.
+      def prepare_code_callback(id_token)
+        state = SecureRandom.hex(16)
+        request.stubs(:params).returns('code' => SecureRandom.hex(16), 'state' => state)
+        request.stubs(:path).returns('')
+        strategy.unstub(:user_info)
+        access_token = stub('OpenIDConnect::AccessToken', access_token: nil, refresh_token: nil, expires_in: nil, scope: nil,
+                                                          id_token: id_token)
+        client.stubs(:access_token!).returns(access_token)
+        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce,
+                                           'omniauth.pkce.verifier.openid_connect' => 'verifier' })
+      end
+
       def test_client_options_defaults
         assert_equal 'https', strategy.options.client_options.scheme
         assert_equal 443, strategy.options.client_options.port
@@ -121,10 +134,9 @@ module OmniAuth
       end
 
       def test_request_phase_with_response_mode
-        expected_redirect = %r{^https://example\.com/authorize\?client_id=1234&code_challenge=[\w-]{43}&code_challenge_method=S256&nonce=\w{32}&response_mode=query&response_type=id_token&scope=openid&state=\w{32}$}
+        expected_redirect = %r{^https://example\.com/authorize\?client_id=1234&code_challenge=[\w-]{43}&code_challenge_method=S256&nonce=\w{32}&response_mode=query&response_type=code&scope=openid&state=\w{32}$}
         strategy.options.issuer = 'example.com'
         strategy.options.response_mode = 'query'
-        strategy.options.response_type = 'id_token'
         strategy.options.client_options.host = 'example.com'
 
         strategy.expects(:redirect).with(regexp_matches(expected_redirect))
@@ -132,10 +144,9 @@ module OmniAuth
       end
 
       def test_request_phase_with_response_mode_symbol
-        expected_redirect = %r{^https://example\.com/authorize\?client_id=1234&code_challenge=[\w-]{43}&code_challenge_method=S256&nonce=\w{32}&response_mode=query&response_type=id_token&scope=openid&state=\w{32}$}
+        expected_redirect = %r{^https://example\.com/authorize\?client_id=1234&code_challenge=[\w-]{43}&code_challenge_method=S256&nonce=\w{32}&response_mode=query&response_type=code&scope=openid&state=\w{32}$}
         strategy.options.issuer = 'example.com'
         strategy.options.response_mode = :query
-        strategy.options.response_type = :id_token
         strategy.options.client_options.host = 'example.com'
 
         strategy.expects(:redirect).with(regexp_matches(expected_redirect))
@@ -220,38 +231,7 @@ module OmniAuth
         strategy.callback_phase
       end
 
-      def test_callback_phase_with_id_token
-        state = SecureRandom.hex(16)
-        request.stubs(:params).returns('id_token' => jwt.to_s, 'state' => state)
-        request.stubs(:path).returns('')
-
-        strategy.options.issuer = 'example.com'
-        strategy.options.client_signing_alg = :RS256
-        strategy.options.client_jwk_signing_key = jwks.to_json
-        strategy.options.response_type = 'id_token'
-
-        strategy.unstub(:user_info)
-        access_token = stub('OpenIDConnect::AccessToken')
-        access_token.stubs(:access_token)
-        access_token.stubs(:refresh_token)
-        access_token.stubs(:expires_in)
-        access_token.stubs(:scope)
-        access_token.stubs(:id_token).returns(jwt.to_s)
-
-        id_token = stub('OpenIDConnect::ResponseObject::IdToken')
-        id_token.stubs(:raw_attributes).returns('sub' => 'sub', 'name' => 'name', 'email' => 'email')
-        id_token.stubs(:verify!).with(issuer: strategy.options.issuer, client_id: @identifier, nonce: nonce).returns(true)
-        ::OpenIDConnect::ResponseObject::IdToken.stubs(:decode).returns(id_token)
-        id_token.expects(:verify!)
-
-        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
-        strategy.expects(:fail!).never
-        strategy.callback_phase
-      end
-
       def test_callback_phase_with_audience
-        state = SecureRandom.hex(16)
-        strategy.options.response_type = 'id_token'
         strategy.options.issuer = 'example.com'
         strategy.options.client_options.audience = 'my_audience'
 
@@ -259,14 +239,9 @@ module OmniAuth
         id_token.expects(:verify!).with(issuer: strategy.options.issuer, client_id: @identifier, audience: 'my_audience',
                                         nonce: nonce).returns(true)
         id_token.stubs(:raw_attributes, :to_h).returns(payload)
-
-        request.stubs(:params).returns('state' => state, 'nounce' => nonce, 'id_token' => id_token)
-        request.stubs(:path).returns('')
-
         strategy.stubs(:decode_id_token).returns(id_token)
-        strategy.stubs(:stored_state).returns(state)
 
-        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        prepare_code_callback(jwt.to_s)
         strategy.expects(:fail!).never
         strategy.callback_phase
       end
@@ -306,17 +281,12 @@ module OmniAuth
 
         key = JSON::JWK.new(private_key)
         other_key = JSON::JWK.new(other_rsa_private)
-        state = SecureRandom.hex(16)
-        request.stubs(:params).returns('id_token' => jwt.to_s, 'state' => state)
-        request.stubs(:path_info).returns('')
 
         strategy.options.issuer = issuer
         strategy.options.client_signing_alg = :RS256
         strategy.options.client_jwk_signing_key = { 'keys' => [other_key, key] }.to_json
-        strategy.options.response_type = 'id_token'
 
-        strategy.unstub(:user_info)
-        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        prepare_code_callback(jwt.to_s)
         strategy.expects(:fail!).never
         strategy.callback_phase
       end
@@ -326,18 +296,13 @@ module OmniAuth
 
         key = JSON::JWK.new(private_key)
         other_key = JSON::JWK.new(other_rsa_private)
-        state = SecureRandom.hex(16)
         jwt_with_kid = JSON::JWT.new(payload).sign(key, :RS256)
-        request.stubs(:params).returns('id_token' => jwt_with_kid.to_s, 'state' => state)
-        request.stubs(:path_info).returns('')
 
         strategy.options.issuer = issuer
         strategy.options.client_signing_alg = :RS256
         strategy.options.client_jwk_signing_key = { 'keys' => [other_key, key] }.to_json
-        strategy.options.response_type = 'id_token'
 
-        strategy.unstub(:user_info)
-        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        prepare_code_callback(jwt_with_kid.to_s)
         strategy.expects(:fail!).never
         strategy.callback_phase
       end
@@ -347,68 +312,45 @@ module OmniAuth
 
         key = JSON::JWK.new(private_key)
         other_key = JSON::JWK.new(other_rsa_private)
-        state = SecureRandom.hex(16)
         jwt_with_kid = JSON::JWT.new(payload).sign(key, :RS256)
-        request.stubs(:params).returns('id_token' => jwt_with_kid.to_s, 'state' => state)
-        request.stubs(:path_info).returns('')
 
         strategy.options.issuer = issuer
         strategy.options.client_signing_alg = :RS256
         # We use private_key here instead of the wrapped key, which contains a kid
         strategy.options.client_jwk_signing_key = { 'keys' => [other_key, private_key] }.to_json
-        strategy.options.response_type = 'id_token'
 
-        strategy.unstub(:user_info)
-        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        prepare_code_callback(jwt_with_kid.to_s)
 
         strategy.expects(:fail!).with(:invalid_id_token, is_a(JSON::JWK::Set::KidNotFound))
         strategy.callback_phase
       end
 
       def test_callback_phase_with_id_token_with_hs256
-        state = SecureRandom.hex(16)
-        request.stubs(:params).returns('id_token' => jwt_with_hs256.to_s, 'state' => state)
-        request.stubs(:path_info).returns('')
-
         strategy.options.issuer = issuer
         strategy.options.client_options.secret = hmac_secret
         strategy.options.client_signing_alg = :HS256
-        strategy.options.response_type = 'id_token'
 
-        strategy.unstub(:user_info)
-        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        prepare_code_callback(jwt_with_hs256.to_s)
         strategy.expects(:fail!).never
         strategy.callback_phase
       end
 
       def test_callback_phase_with_hs256_base64_jwt_secret
-        state = SecureRandom.hex(16)
-        request.stubs(:params).returns('id_token' => jwt_with_hs256.to_s, 'state' => state)
-        request.stubs(:path_info).returns('')
-
         strategy.options.issuer = issuer
         strategy.options.jwt_secret_base64 = Base64.encode64(hmac_secret)
         strategy.options.client_signing_alg = :HS256
-        strategy.options.response_type = 'id_token'
 
-        strategy.unstub(:user_info)
-        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        prepare_code_callback(jwt_with_hs256.to_s)
         strategy.expects(:fail!).never
         strategy.callback_phase
       end
 
       def test_callback_phase_with_mismatched_signing_algorithm
-        state = SecureRandom.hex(16)
-        request.stubs(:params).returns('id_token' => jwt_with_hs512.to_s, 'state' => state)
-        request.stubs(:path_info).returns('')
-
         strategy.options.issuer = issuer
         strategy.options.client_options.secret = hmac_secret
         strategy.options.client_signing_alg = :HS256
-        strategy.options.response_type = 'id_token'
 
-        strategy.unstub(:user_info)
-        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        prepare_code_callback(jwt_with_hs512.to_s)
 
         strategy.expects(:fail!).with(:invalid_jwt_algorithm, is_a(OmniAuth::Strategies::OpenIDConnect::CallbackError))
         strategy.callback_phase
@@ -420,17 +362,12 @@ module OmniAuth
 
         other_key = JSON::JWK.new(other_rsa_private)
         token = JSON::JWT.new(payload).sign(rsa_private, :RS256).to_s
-        state = SecureRandom.hex(16)
-        request.stubs(:params).returns('id_token' => token, 'state' => state)
-        request.stubs(:path_info).returns('')
 
         strategy.options.issuer = issuer
         strategy.options.client_signing_alg = :RS256
         strategy.options.client_jwk_signing_key = { 'keys' => [other_key] }.to_json
-        strategy.options.response_type = 'id_token'
 
-        strategy.unstub(:user_info)
-        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        prepare_code_callback(token)
 
         strategy.expects(:fail!).with(:invalid_id_token, is_a(JSON::JWK::Set::KidNotFound))
         strategy.callback_phase
@@ -585,27 +522,13 @@ module OmniAuth
       end
 
       def test_callback_phase_with_jwks_uri
-        id_token = jwt.to_s
-        state = SecureRandom.hex(16)
-        request.stubs(:params).returns('id_token' => id_token, 'state' => state)
-        request.stubs(:path_info).returns('')
-
         strategy.options.issuer = 'example.com'
         strategy.options.client_options.jwks_uri = 'https://jwks.example.com'
-        strategy.options.response_type = 'id_token'
 
         stub_request(:get, strategy.options.client_options.jwks_uri).to_return(
           body: jwks.to_json,
           headers: { 'Content-Type' => 'application/json' }
         )
-
-        strategy.unstub(:user_info)
-        access_token = stub('OpenIDConnect::AccessToken')
-        access_token.stubs(:access_token)
-        access_token.stubs(:refresh_token)
-        access_token.stubs(:expires_in)
-        access_token.stubs(:scope)
-        access_token.stubs(:id_token).returns(id_token)
 
         id_token = stub('OpenIDConnect::ResponseObject::IdToken')
         id_token.stubs(:raw_attributes).returns('sub' => 'sub', 'name' => 'name', 'email' => 'email')
@@ -613,9 +536,10 @@ module OmniAuth
         ::OpenIDConnect::ResponseObject::IdToken.stubs(:decode).returns(id_token)
         id_token.expects(:verify!)
 
-        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        prepare_code_callback(jwt.to_s)
         strategy.expects(:fail!).never
         strategy.callback_phase
+        assert_requested :get, strategy.options.client_options.jwks_uri
       end
 
       def test_callback_phase_with_error
@@ -648,30 +572,6 @@ module OmniAuth
         strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
 
         strategy.expects(:fail!).with(:missing_code, is_a(OmniAuth::OpenIDConnect::MissingCodeError))
-        strategy.callback_phase
-      end
-
-      def test_callback_phase_without_id_token
-        state = SecureRandom.hex(16)
-        request.stubs(:params).returns('state' => state)
-        request.stubs(:path).returns('')
-        strategy.options.response_type = 'id_token'
-
-        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
-
-        strategy.expects(:fail!).with(:missing_id_token, is_a(OmniAuth::OpenIDConnect::MissingIdTokenError))
-        strategy.callback_phase
-      end
-
-      def test_callback_phase_without_id_token_symbol
-        state = SecureRandom.hex(16)
-        request.stubs(:params).returns('state' => state)
-        request.stubs(:path).returns('')
-        strategy.options.response_type = :id_token
-
-        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
-
-        strategy.expects(:fail!).with(:missing_id_token, is_a(OmniAuth::OpenIDConnect::MissingIdTokenError))
         strategy.callback_phase
       end
 
@@ -929,29 +829,17 @@ module OmniAuth
       end
 
       def test_id_token_auth_hash
-        state = SecureRandom.hex(16)
-        strategy.options.response_type = 'id_token'
-        strategy.options.issuer = 'example.com'
+        strategy.options.issuer = issuer
+        strategy.options.client_jwk_signing_key = jwks.to_json
 
-        id_token = stub('OpenIDConnect::ResponseObject::IdToken')
-        id_token.stubs(:verify!).returns(true)
-        id_token.stubs(:raw_attributes, :to_h).returns(payload)
-
-        request.stubs(:params).returns('state' => state, 'nounce' => nonce, 'id_token' => id_token)
-        request.stubs(:path).returns('')
-
-        strategy.stubs(:decode_id_token).returns(id_token)
-        strategy.stubs(:stored_state).returns(state)
-
-        strategy.call!('rack.session' => { 'omniauth.state.openid_connect' => state, 'omniauth.nonce.openid_connect' => nonce })
+        prepare_code_callback(jwt.to_s)
         strategy.expects(:fail!).never
         strategy.callback_phase
 
         auth_hash = strategy.send(:env)['omniauth.auth']
+        assert_equal payload[:sub], auth_hash['uid']
         assert auth_hash.key?('provider')
-        assert auth_hash.key?('uid')
         assert auth_hash.key?('info')
-        assert auth_hash.key?('extra')
         assert auth_hash['extra'].key?('raw_info')
       end
 

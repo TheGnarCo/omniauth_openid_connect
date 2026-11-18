@@ -26,9 +26,10 @@ disagree, this section is right.
 | Authorization, token, key set and end-session endpoints from discovery must be https on an allowed host. | `allowed_endpoint_hosts` | the `discovery_url` host |
 | Discovery document and key set cached per process. One fetch at a time per URL; a failed fetch is remembered; an expired value is served while its refresh fails, logged at ERROR, with a shorter cap for keys. A token with an unknown `kid` forces one key set refresh. | `metadata_ttl`, `jwks_ttl`, `stale_ttl`, `jwks_stale_ttl`, `negative_ttl` | `3600`, `900`, `3600`, `300`, `10` seconds |
 | Discovery and key set responses: no redirects followed, at most 512 KB, no compression. | | |
-| Forced key set refreshes (unknown `kid`) happen at most once per interval per key set, and only for a token whose unverified `iss`, `aud` and `exp` are already right, so callers cannot force one fetch per request. | `jwks_min_refresh_interval` | `60` seconds |
+| Forced key set refreshes (unknown `kid`) happen at most once per interval per key set, and only for a token whose unverified `iss`, `aud` and `exp` are already right, so a provider that keeps serving tokens with unknown keys cannot cause a fetch per sign-in. | `jwks_min_refresh_interval` | `60` seconds |
 | Open and read timeouts on discovery, key set and token requests, set per request (not through the global `OpenIDConnect.http_config`). | `open_timeout`, `read_timeout` | `3`, `5` seconds |
 | `redirect_uri` is always the configured value; a `redirect_uri` request parameter is ignored. | `client_options.redirect_uri` | |
+| Only the authorization code flow: `response_type` must be unset or `code`; anything else raises `ConfigurationError`. The implicit (`id_token`) flow was removed on purpose. To restore it, revert the commit "feat: accept only response_type code". | `response_type` | `code` |
 | `response_mode` must be unset or `query`; anything else raises `ConfigurationError`. | `response_mode` | unset |
 | `client_auth_method` must be unset, `:basic` or `:post`; anything else raises `ConfigurationError`. | `client_auth_method` | `:basic` |
 | The gem's `GET <request path>/logout` route is removed. The app builds sign-out with `logout_redirect_url`. | | |
@@ -146,7 +147,7 @@ end
 | discovery                    | Should OpenID discovery be used. This is recommended if the IDP provides a discovery endpoint. See client config for how to manually enter discovered values.            | no       | false                         | one of: true, false                                 |
 | client_auth_method           | Which authentication method to use to authenticate your app with the authorization server                                                                                | no       | Sym: basic                    | "basic", "jwks"                                     |
 | scope                        | Which OpenID scopes to include (:openid is always required)                                                                                                              | no       | Array<sym> [:openid]          | [:openid, :profile, :email]                         |
-| response_type                | Which OAuth2 response type to use with the authorization request                                                                                                         | no       | String: code                  | one of: 'code', 'id_token'                          |
+| response_type                | Which OAuth2 response type to use with the authorization request                                                                                                         | no       | String: code                  | 'code' (anything else is refused)                   |
 | state                        | A value to be used for the OAuth2 state parameter on the authorization request. Can be a proc that generates a string.                                                   | no       | Random 16 character string    | Proc.new { SecureRandom.hex(32) }                   |
 | require_state                | Should the callback phase require that a state is present. If `send_state` is true, then the callback state must match the authorize state. This is recommended, not required by the OIDC specification. | no       | true                          | false                                               |
 | send_state                   | Should the authorize phase send a `state` parameter - this is recommended, not required by the OIDC specification                                                        | no       | true                          | false                                               |
@@ -191,8 +192,8 @@ These are the configuration options for the client_options hash of the configura
   **NOTE**: if you use this gem with Devise you should use `:openid_connect` name,
   or Devise would route to 'users/auth/:provider' rather than 'users/auth/openid_connect'
 
-  * `response_type` tells the authorization server which grant type the application wants to use,
-  currently, only `:code` (Authorization Code grant) and `:id_token` (Implicit grant) are valid.
+  * `response_type` tells the authorization server which grant type the application wants to use.
+  Only `:code` (Authorization Code grant) is accepted in this fork.
   * If you want to pass `state` parameter by yourself. You can set Proc Object.
   e.g. `state: Proc.new { SecureRandom.hex(32) }`
   * `nonce` is optional. If don't want to pass "nonce" parameter to provider, You should specify

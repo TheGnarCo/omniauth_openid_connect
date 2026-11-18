@@ -6,8 +6,6 @@ module OmniAuth
 
     class MissingCodeError < Error; end
 
-    class MissingIdTokenError < Error; end
-
     # Gnar: the strategy options are unsafe or incomplete. Raised, not turned into a sign-in failure.
     class ConfigurationError < Error; end
 

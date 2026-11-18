@@ -291,6 +291,22 @@ module OmniAuth
         assert_raises(OmniAuth::OpenIDConnect::ConfigurationError) { strategy.request_phase }
       end
 
+      def test_t16_response_type_other_than_code_is_refused
+        ['id_token', :id_token, 'code id_token', 'token'].each do |type|
+          strategy = OmniAuth::Strategies::OpenIDConnect.new(nil, provider_options('entra', response_type: type))
+          error = assert_raises(OmniAuth::OpenIDConnect::ConfigurationError, type.inspect) { strategy.request_phase }
+          assert_includes error.message, "'code'"
+          assert_raises(OmniAuth::OpenIDConnect::ConfigurationError) { browser(response_type: type).start('entra') }
+        end
+      end
+
+      def test_t16_unset_response_type_means_code
+        %w[code].push(nil, :code).each do |type|
+          location = browser(response_type: type).start('entra')
+          assert_equal 'code', OidcHarness.param(location, 'response_type'), type.inspect
+        end
+      end
+
       def test_x1_token_response_without_id_token_fails
         @fake.configure(no_id_token: true)
         assert_clean_failure browser.sign_in('entra'), :missing_id_token

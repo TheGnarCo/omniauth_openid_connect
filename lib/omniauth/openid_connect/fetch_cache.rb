@@ -43,7 +43,7 @@ module OmniAuth
 
       # key is [kind, ...]. replace is a value the caller found unusable (a key set without the needed kid): the
       # entry is refreshed unless another caller already replaced that value, or a refresh forced this way happened
-      # less than min_replace_interval seconds ago. The interval stops callers from forcing one fetch per request.
+      # less than min_replace_interval seconds ago. The interval bounds how often such refreshes can happen.
       def fetch(key, ttl:, negative_ttl:, stale_ttl:, replace: nil, min_replace_interval: 0, &block) # rubocop:disable Metrics/ParameterLists
         replace = nil if replace && recently_replaced?(key, min_replace_interval)
         entry = read(key)

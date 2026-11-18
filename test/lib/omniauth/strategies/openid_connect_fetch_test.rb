@@ -91,16 +91,6 @@ module OmniAuth
         assert_equal 2, counts[:jwks]
       end
 
-      # In the id_token response type the token comes from the callback request, so a caller who starts their own
-      # sign-ins can send tokens with unknown kids. Forced key set refreshes must be rate limited across requests.
-      def forged_id_token_callback(browser, claims = {})
-        state = OidcHarness.param(browser.start('entra'), 'state')
-        now = Time.now.to_i
-        payload = { iss: @fake.issuer, aud: FakeEntra::CLIENT_ID, sub: 'x', iat: now, exp: now + 300 }.merge(claims)
-        token = JSON::JWT.new(payload).sign(JSON::JWK.new(FakeEntra::KEY_POOL.last), :RS256).to_s
-        browser.callback("/auth/entra/callback?#{URI.encode_www_form('state' => state, 'id_token' => token)}")
-      end
-
       def test_unexpected_token_type_is_a_clean_failure_without_its_text
         @fake.configure(token_overrides: { token_type: 'providertext<b>4711' })
         result = browser.sign_in('entra')
@@ -115,24 +105,22 @@ module OmniAuth
         refute_includes result.failure[:message].to_s + result.log, 'providertext'
       end
 
-      def raw_id_token_callback(browser, header, payload, extra = {})
-        state = OidcHarness.param(browser.start('entra'), 'state')
+      # A malformed ID token served by the token endpoint: header and payload as given, a dummy signature.
+      def raw_token(header, payload)
         parts = [header, payload].map { |part| Base64.urlsafe_encode64(JSON.generate(part), padding: false) }
-        token = "#{parts.join('.')}.c2ln"
-        browser.callback("/auth/entra/callback?#{URI.encode_www_form({ 'state' => state, 'id_token' => token }.merge(extra))}")
+        "#{parts.join('.')}.c2ln"
       end
 
       def test_id_token_without_alg_or_with_a_non_object_payload_is_a_clean_failure
-        b = browser(response_type: 'id_token')
-        refute_equal 500, raw_id_token_callback(b, { typ: 'JWT' }, { iss: @fake.issuer }).status
-        assert_clean_failure raw_id_token_callback(b, { typ: 'JWT' }, { iss: @fake.issuer }), :invalid_jwt_algorithm
-        assert_clean_failure raw_id_token_callback(b, { alg: 'RS256', typ: 'JWT' }, [1, 2]), :invalid_response
+        @fake.configure(token_overrides: { id_token: raw_token({ typ: 'JWT' }, { iss: @fake.issuer }) })
+        assert_clean_failure browser.sign_in('entra'), :invalid_jwt_algorithm
+        @fake.configure(token_overrides: { id_token: raw_token({ alg: 'RS256', typ: 'JWT' }, [1, 2]) })
+        assert_clean_failure browser.sign_in('entra'), :invalid_response
       end
 
       def test_error_uri_and_token_alg_header_stay_out_of_failure_and_log
-        b = browser(response_type: 'id_token')
-        result = raw_id_token_callback(b, { alg: 'HS256', typ: 'JWT' }, { iss: @fake.issuer },
-                                       'error_uri' => 'PROVIDERTEXT<b>4711')
+        @fake.configure(token_overrides: { id_token: raw_token({ alg: 'HS256', typ: 'JWT' }, { iss: @fake.issuer }) })
+        result = browser.sign_in('entra') { |cb| OidcHarness.with_params(cb, 'error_uri' => 'PROVIDERTEXT<b>4711') }
         assert_clean_failure result, :invalid_jwt_algorithm
         refute_includes result.failure[:message].to_s + result.log, 'PROVIDERTEXT'
         refute_includes result.failure[:message].to_s, 'HS256'
@@ -150,20 +138,24 @@ module OmniAuth
         assert_empty @fake.requests_of(:token)
       end
 
-      def test_unknown_kids_from_the_callback_force_at_most_one_refresh_per_interval
+      # Tokens signed with a key the provider does not publish: forced key set refreshes are rate limited across
+      # sign-ins, so a provider that keeps doing this cannot cause a fetch per sign-in.
+      def test_unknown_kids_force_at_most_one_refresh_per_interval
         freeze_clock
-        b = browser(response_type: 'id_token')
-        3.times { assert_clean_failure forged_id_token_callback(b), :invalid_id_token }
+        @fake.configure(unknown_key: true)
+        app = browser.app
+        3.times { assert_clean_failure Browser.new(app, @fake).sign_in('entra'), :invalid_id_token }
         assert_equal 2, counts[:jwks], 'one initial fetch and one forced refresh'
         @now += 61
-        assert_clean_failure forged_id_token_callback(b), :invalid_id_token
+        assert_clean_failure Browser.new(app, @fake).sign_in('entra'), :invalid_id_token
         assert_equal 3, counts[:jwks]
       end
 
       def test_unknown_kid_with_wrong_issuer_audience_or_expiry_forces_no_refresh
-        b = browser(response_type: 'id_token')
+        app = browser.app
         [{ iss: 'https://evil.example.test/v2.0' }, { aud: 'other' }, { exp: Time.now.to_i - 10 }].each do |claims|
-          assert_clean_failure forged_id_token_callback(b, claims), :invalid_id_token
+          @fake.configure(unknown_key: true, claims: claims)
+          assert_clean_failure Browser.new(app, @fake).sign_in('entra'), :invalid_id_token
         end
         assert_equal 1, counts[:jwks]
       end
